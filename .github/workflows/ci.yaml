@@ -89,7 +89,7 @@ jobs:
           helm template validation deploy/cert-manager-alidns-webhook \
             --namespace cert-manager --set allowedZones[0]=pksl.net.cn > /tmp/explicit.yaml
           awk '
-            /name: ALIDNS_ALLOWED_ZONES/ { getline; if ($0 ~ /value: pksl.net.cn/) explicit_zone = 1 }
+            /name: ALIDNS_ALLOWED_ZONES/ { getline; if ($0 ~ /value: "pksl.net.cn"/) explicit_zone = 1 }
             END { exit !explicit_zone }
           ' /tmp/explicit.yaml
 
