@@ -1,0 +1,27 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cert-manager-alidns-webhook.fullname" . }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app: {{ include "cert-manager-alidns-webhook.name" . }}
+    chart: {{ include "cert-manager-alidns-webhook.chart" . }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ include "cert-manager-alidns-webhook.name" . }}
+      release: {{ .Release.Name }}
+  policyTypes:
+{{ toYaml .Values.networkPolicy.policyTypes | indent 4 }}
+  {{- with .Values.networkPolicy.ingress }}
+  ingress:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  {{- with .Values.networkPolicy.egress }}
+  egress:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+{{- end }}

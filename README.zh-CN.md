@@ -9,23 +9,23 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/crazygit/cert-manager-alidns-webhook/actions/workflows/ci.yaml">
-    <img src="https://img.shields.io/github/actions/workflow/status/crazygit/cert-manager-alidns-webhook/ci.yaml?branch=main" alt="CI Status" />
+  <a href="https://github.com/bernylinville/cert-manager-alidns-webhook/actions/workflows/ci.yaml">
+    <img src="https://img.shields.io/github/actions/workflow/status/bernylinville/cert-manager-alidns-webhook/ci.yaml?branch=main" alt="CI Status" />
   </a>
-  <a href="https://github.com/crazygit/cert-manager-alidns-webhook/releases">
-    <img src="https://img.shields.io/github/v/release/crazygit/cert-manager-alidns-webhook" alt="Latest Release" />
+  <a href="https://github.com/bernylinville/cert-manager-alidns-webhook/releases">
+    <img src="https://img.shields.io/github/v/release/bernylinville/cert-manager-alidns-webhook" alt="Latest Release" />
   </a>
-  <a href="https://github.com/crazygit/cert-manager-alidns-webhook/pkgs/container/cert-manager-alidns-webhook">
-    <img src="https://img.shields.io/github/v/release/crazygit/cert-manager-alidns-webhook?include_prereleases&label=ghcr.io" alt="Docker Package" />
+  <a href="https://github.com/bernylinville/cert-manager-alidns-webhook/pkgs/container/cert-manager-alidns-webhook">
+    <img src="https://img.shields.io/github/v/release/bernylinville/cert-manager-alidns-webhook?include_prereleases&label=ghcr.io" alt="Docker Package" />
   </a>
   <a href="https://artifacthub.io/packages/search?repo=cert-manager-alidns-webhook">
     <img src="https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/cert-manager-alidns-webhook" alt="Artifact Hub" />
   </a>
-  <a href="https://codecov.io/github/crazygit/cert-manager-alidns-webhook" >
-    <img src="https://codecov.io/github/crazygit/cert-manager-alidns-webhook/graph/badge.svg?token=SE1CACI9FY"/>
+  <a href="https://codecov.io/github/bernylinville/cert-manager-alidns-webhook" >
+    <img src="https://codecov.io/github/bernylinville/cert-manager-alidns-webhook/graph/badge.svg"/>
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/crazygit/cert-manager-alidns-webhook" alt="License" />
+    <img src="https://img.shields.io/github/license/bernylinville/cert-manager-alidns-webhook" alt="License" />
   </a>
 </p>
 
@@ -46,7 +46,7 @@
 - **多种认证** - 支持 RRSA、环境变量、Kubernetes Secret、ECS 实例角色等
 - **幂等操作** - DNS 记录的添加和删除操作可安全重试
 - **生产就绪** - 完整的 Helm Chart、RBAC 配置和健康检查
-- **最新技术栈** - 基于最新的阿里云 Tea SDK 和 cert-manager v1.19+
+- **最新技术栈** - 阿里云 Tea SDK、cert-manager v1.21.1 和 Kubernetes v0.36 依赖
 
 ---
 
@@ -108,11 +108,13 @@
 
 ### 前置条件
 
-- Kubernetes 1.34+
+- cert-manager v1.21.1 支持的 Kubernetes 版本
 - Helm 3.0+
-- 已安装 cert-manager v1.19.0+
+- 已安装 cert-manager v1.21.1
 - 阿里云 DNS 账号
 - 域名已托管在阿里云 DNS
+
+Webhook 仅允许修改 `allowedZones` 中精确列出的 DNS Zone，未配置时会拒绝启动。Chart 默认为生产 Zone `pksl.net.cn`，其他环境必须覆盖该值。
 
 ### 方式一：使用 RRSA（生产环境推荐）
 
@@ -128,9 +130,10 @@ RRSA (RAM Roles for Service Accounts) 是在 ACK（阿里云 Kubernetes）上生
 
 ```bash
 # 使用 Helm 安装 webhook
-helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook \
+helm install cert-manager-alidns-webhook oci://ghcr.io/bernylinville/charts/cert-manager-alidns-webhook \
+  --set allowedZones[0]=example.com \
   --set aliyunAuth.rrsa.enabled=true \
-  --set aliyunAuth.roleName=<YOUR_ROLE_NAME>
+  --set aliyunAuth.rrsa.roleName=<YOUR_ROLE_NAME>
 ```
 
 #### 为 RRSA 角色授权
@@ -164,7 +167,8 @@ helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-mana
 
 ```bash
 # 直接传值
-helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook \
+helm install cert-manager-alidns-webhook oci://ghcr.io/bernylinville/charts/cert-manager-alidns-webhook \
+  --set allowedZones[0]=example.com \
   --set aliyunAuth.accessKeyID=<YOUR_ACCESS_KEY_ID> \
   --set aliyunAuth.accessKeySecret=<YOUR_ACCESS_KEY_SECRET>
 
@@ -174,7 +178,8 @@ kubectl create secret generic alidns-credentials \
   --from-literal=accessKeyID=<YOUR_ACCESS_KEY_ID> \
   --from-literal=accessKeySecret=<YOUR_ACCESS_KEY_SECRET>
 
-helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook \
+helm install cert-manager-alidns-webhook oci://ghcr.io/bernylinville/charts/cert-manager-alidns-webhook \
+  --set allowedZones[0]=example.com \
   --set aliyunAuth.existingSecret=alidns-credentials
 ```
 
@@ -183,7 +188,8 @@ helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-mana
 如果你的 Kubernetes 集群运行在阿里云 ECS 上，并且已分配实例 RAM 角色并为该角色绑定了[所需的权限](#为-rrsa-角色授权)，无需额外认证配置：
 
 ```bash
-helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook
+helm install cert-manager-alidns-webhook oci://ghcr.io/bernylinville/charts/cert-manager-alidns-webhook \
+  --set allowedZones[0]=example.com
 ```
 
 ### 方式四：使用 config.json 文件
@@ -196,7 +202,8 @@ kubectl create configmap aliyun-config \
   --from-file=config.json=/path/to/.aliyun/config.json
 
 # 使用 Helm 安装 webhook
-helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook \
+helm install cert-manager-alidns-webhook oci://ghcr.io/bernylinville/charts/cert-manager-alidns-webhook \
+  --set allowedZones[0]=example.com \
   --set aliyunAuth.configJSON.enabled=true \
   --set aliyunAuth.configJSON.configMapName=aliyun-config
 ```
@@ -220,7 +227,7 @@ spec:
     solvers:
       - dns01:
           webhook:
-            groupName: alidns.crazygit.github.io # 若 Helm 安装时自定义了 groupName，此处需保持一致
+            groupName: alidns.bernylinville.github.io # 若 Helm 安装时自定义了 groupName，此处需保持一致
             solverName: alidns
 ```
 
@@ -240,7 +247,7 @@ spec:
     solvers:
       - dns01:
           webhook:
-            groupName: alidns.crazygit.github.io # 若 Helm 安装时自定义了 groupName，此处需保持一致
+            groupName: alidns.bernylinville.github.io # 若 Helm 安装时自定义了 groupName，此处需保持一致
             solverName: alidns
 ```
 
@@ -265,22 +272,26 @@ kubectl delete configmap aliyun-config
 
 ### Helm Values
 
-| 参数                                  | 描述                          | 默认值                                 |
-| :------------------------------------ | :---------------------------- | :------------------------------------- |
-| `groupName`                           | API 组名                      | `alidns.crazygit.github.io`            |
-| `image.repository`                    | 镜像仓库                      | `crazygit/cert-manager-alidns-webhook` |
-| `image.tag`                           | 镜像标签                      | `""`（默认使用 chart 的 appVersion） |
-| `replicaCount`                        | 副本数                        | `1`                                    |
-| `aliyunAuth.regionID`                 | 阿里云区域 ID                 | `""`                                   |
-| `aliyunAuth.accessKeyID`              | AccessKey ID                  | `""`                                   |
-| `aliyunAuth.accessKeySecret`          | AccessKey Secret              | `""`                                   |
-| `aliyunAuth.existingSecret`           | 现有 Secret 名称              | `""`                                   |
-| `aliyunAuth.rrsa.enabled`             | 启用 RRSA                     | `false`                                |
-| `aliyunAuth.rrsa.roleName`            | RRSA 角色名称                 | `""`                                   |
-| `aliyunAuth.configJSON.enabled`       | 启用 config.json              | `false`                                |
-| `aliyunAuth.configJSON.configMapName` | config.json 的 ConfigMap 名称 | `""`                                   |
+| 参数                                  | 描述                          | 默认值                                                |
+| :------------------------------------ | :---------------------------- | :---------------------------------------------------- |
+| `groupName`                           | 聚合 API 组名                 | `alidns.bernylinville.github.io`                      |
+| `allowedZones`                        | DNS 修改精确允许列表          | `["pksl.net.cn"]`                                    |
+| `image.repository`                    | 镜像仓库                      | `ghcr.io/bernylinville/cert-manager-alidns-webhook`   |
+| `image.tag`                           | 镜像标签                      | `""`（默认使用 chart appVersion）                    |
+| `imagePullSecrets`                    | 镜像拉取 Secret               | `[]`                                                  |
+| `replicaCount`                        | 副本数                        | `2`                                                   |
+| `securePort`                          | 非 root 容器 HTTPS 监听端口   | `10250`                                               |
+| `resources`                           | CPU/内存 requests 与 limits   | requests `10m/32Mi`，limits `100m/128Mi`              |
+| `podDisruptionBudget.enabled`         | 创建 PDB                      | `true`                                                |
+| `podAntiAffinity.enabled`             | 优先将副本分散到不同节点      | `true`                                                |
+| `topologySpreadConstraints.enabled`   | 启用 hostname 拓扑分散        | `true`                                                |
+| `networkPolicy.enabled`               | 创建可配置 NetworkPolicy      | `false`                                               |
+| `aliyunAuth.existingSecret`           | 现有 AK/SK Secret             | `""`                                                 |
+| `aliyunAuth.rrsa.enabled`             | 启用 RRSA                     | `false`                                               |
 
-完整配置请参考 [deploy/cert-manager-alidns-webhook/values.yaml](https://github.com/crazygit/cert-manager-alidns-webhook/blob/main/deploy/cert-manager-alidns-webhook/values.yaml)。
+完整配置请参考 [deploy/cert-manager-alidns-webhook/values.yaml](https://github.com/bernylinville/cert-manager-alidns-webhook/blob/main/deploy/cert-manager-alidns-webhook/values.yaml)。
+
+Service 仍对外暴露 `443`；`securePort` 是通过 Service 命名 `https` targetPort 转发到的非特权容器监听端口。
 
 ---
 

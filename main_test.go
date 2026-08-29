@@ -5,10 +5,11 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/bernylinville/cert-manager-alidns-webhook/pkg/alidns"
 	acmetest "github.com/cert-manager/cert-manager/test/acme"
-	"github.com/crazygit/cert-manager-alidns-webhook/pkg/alidns"
 )
 
 var (
@@ -16,6 +17,7 @@ var (
 )
 
 func TestRunsSuite(t *testing.T) {
+	t.Setenv("ALIDNS_ALLOWED_ZONES", strings.TrimSuffix(zone, "."))
 	// The manifest path should contain a file named config.json that is a
 	// snippet of valid configuration that should be included on the
 	// ChallengeRequest passed as part of the test cases.

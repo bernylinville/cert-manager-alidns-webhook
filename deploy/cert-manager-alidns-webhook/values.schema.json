@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["groupName", "allowedZones", "image", "replicaCount", "securePort"],
+  "properties": {
+    "groupName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+    },
+    "allowedZones": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9\\p{L}](?:[A-Za-z0-9\\p{L}.-]*[A-Za-z0-9\\p{L}])?\\.?$"
+      }
+    },
+    "certManager": {
+      "type": "object",
+      "required": ["namespace", "serviceAccountName"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1},
+        "serviceAccountName": {"type": "string", "minLength": 1}
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": ["repository", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "digest": {"type": "string", "pattern": "^$|^sha256:[a-f0-9]{64}$"},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string", "minLength": 1}}
+      }
+    },
+    "replicaCount": {"type": "integer", "minimum": 1},
+    "securePort": {"type": "integer", "minimum": 1024, "maximum": 65535},
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      }
+    },
+    "aliyunAuth": {
+      "type": "object",
+      "properties": {
+        "regionID": {"type": "string"},
+        "accessKeyID": {"type": "string"},
+        "accessKeySecret": {"type": "string"},
+        "existingSecret": {"type": "string"},
+        "rrsa": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "roleName": {"type": "string"}
+          }
+        },
+        "configJSON": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "configMapName": {"type": "string"}
+          }
+        }
+      }
+    },
+    "podSecurityContext": {"type": "object"},
+    "securityContext": {"type": "object"},
+    "resources": {"type": "object"},
+    "podDisruptionBudget": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "minAvailable": {"type": ["integer", "string", "null"]},
+        "maxUnavailable": {"type": ["integer", "string", "null"]}
+      }
+    },
+    "topologySpreadConstraints": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "maxSkew": {"type": "integer", "minimum": 1},
+        "topologyKey": {"type": "string", "minLength": 1},
+        "whenUnsatisfiable": {"enum": ["DoNotSchedule", "ScheduleAnyway"]}
+      }
+    },
+    "podAntiAffinity": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "topologyKey": {"type": "string", "minLength": 1},
+        "weight": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
+    "nodeSelector": {"type": "object"},
+    "tolerations": {"type": "array"},
+    "affinity": {"type": "object"},
+    "networkPolicy": {
+      "type": "object",
+      "required": ["enabled", "policyTypes"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "policyTypes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["Ingress", "Egress"]}
+        },
+        "ingress": {"type": "array"},
+        "egress": {"type": "array"}
+      }
+    },
+    "nameOverride": {"type": "string"},
+    "fullnameOverride": {"type": "string"}
+  }
+}

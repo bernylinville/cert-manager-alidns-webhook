@@ -21,17 +21,30 @@ spec:
         release: {{ .Release.Name }}
     spec:
       serviceAccountName: {{ include "cert-manager-alidns-webhook.fullname" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      securityContext:
+{{ toYaml .Values.podSecurityContext | indent 8 }}
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}{{- if .Values.image.digest }}@{{ .Values.image.digest }}{{- end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+{{ toYaml .Values.securityContext | indent 12 }}
           args:
             - --tls-cert-file=/tls/tls.crt
             - --tls-private-key-file=/tls/tls.key
+            - --secure-port={{ .Values.securePort }}
           env:
             # GROUP_NAME - cert-manager webhook API group
             - name: GROUP_NAME
               value: {{ .Values.groupName | quote }}
+            - name: ALIDNS_ALLOWED_ZONES
+              value: {{ join "," .Values.allowedZones | quote }}
+            - name: HOME
+              value: /home/nonroot
             {{- /* 环境变量 REGION_ID */}}
 
             {{- if .Values.aliyunAuth.regionID }}
@@ -64,7 +77,7 @@ spec:
             {{- end }}
           ports:
             - name: https
-              containerPort: 443
+              containerPort: {{ .Values.securePort }}
               protocol: TCP
           livenessProbe:
             httpGet:
@@ -83,7 +96,7 @@ spec:
             {{- /* config.json volume mount */}}
             {{- if .Values.aliyunAuth.configJSON.enabled }}
             - name: aliyun-config
-              mountPath: /root/.aliyun
+              mountPath: /home/nonroot/.aliyun
               readOnly: true
             {{- end }}
           resources:
@@ -98,13 +111,36 @@ spec:
           configMap:
             name: {{ .Values.aliyunAuth.configJSON.configMapName | quote }}
         {{- end }}
+    {{- if .Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ .Values.topologySpreadConstraints.topologyKey | quote }}
+          whenUnsatisfiable: {{ .Values.topologySpreadConstraints.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              app: {{ include "cert-manager-alidns-webhook.name" . }}
+              release: {{ .Release.Name }}
+    {{- end }}
     {{- with .Values.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}
     {{- end }}
-    {{- with .Values.affinity }}
+    {{- if or .Values.podAntiAffinity.enabled .Values.affinity }}
       affinity:
+      {{- if .Values.podAntiAffinity.enabled }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: {{ .Values.podAntiAffinity.weight }}
+              podAffinityTerm:
+                topologyKey: {{ .Values.podAntiAffinity.topologyKey | quote }}
+                labelSelector:
+                  matchLabels:
+                    app: {{ include "cert-manager-alidns-webhook.name" . }}
+                    release: {{ .Release.Name }}
+      {{- end }}
+      {{- with .Values.affinity }}
 {{ toYaml . | indent 8 }}
+      {{- end }}
     {{- end }}
     {{- with .Values.tolerations }}
       tolerations:
