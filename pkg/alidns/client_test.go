@@ -3,7 +3,6 @@ package alidns
 import (
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 
 	alidns "github.com/alibabacloud-go/alidns-20150109/v5/client"
@@ -13,23 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// MockAliDNSClient 是用于测试的 mock 客户端
 type MockAliDNSClient struct {
-	// 可配置的 mock 行为
-	AddDomainRecordFunc       func(request *alidns.AddDomainRecordRequest, runtime *util.RuntimeOptions) (*alidns.AddDomainRecordResponse, error)
-	DeleteDomainRecordFunc    func(request *alidns.DeleteDomainRecordRequest, runtime *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error)
-	DescribeDomainRecordsFunc func(request *alidns.DescribeDomainRecordsRequest, runtime *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error)
+	AddDomainRecordFunc       func(*alidns.AddDomainRecordRequest, *util.RuntimeOptions) (*alidns.AddDomainRecordResponse, error)
+	DeleteDomainRecordFunc    func(*alidns.DeleteDomainRecordRequest, *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error)
+	DescribeDomainRecordsFunc func(*alidns.DescribeDomainRecordsRequest, *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error)
 }
 
 func (m *MockAliDNSClient) AddDomainRecordWithOptions(request *alidns.AddDomainRecordRequest, runtime *util.RuntimeOptions) (*alidns.AddDomainRecordResponse, error) {
 	if m.AddDomainRecordFunc != nil {
 		return m.AddDomainRecordFunc(request, runtime)
 	}
-	return &alidns.AddDomainRecordResponse{
-		Body: &alidns.AddDomainRecordResponseBody{
-			RecordId: tea.String("mock-record-id"),
-		},
-	}, nil
+	return addResponse("mock-record-id"), nil
 }
 
 func (m *MockAliDNSClient) DeleteDomainRecordWithOptions(request *alidns.DeleteDomainRecordRequest, runtime *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error) {
@@ -43,422 +36,293 @@ func (m *MockAliDNSClient) DescribeDomainRecordsWithOptions(request *alidns.Desc
 	if m.DescribeDomainRecordsFunc != nil {
 		return m.DescribeDomainRecordsFunc(request, runtime)
 	}
-	return &alidns.DescribeDomainRecordsResponse{
-		Body: &alidns.DescribeDomainRecordsResponseBody{
-			TotalCount: tea.Int64(0),
-			DomainRecords: &alidns.DescribeDomainRecordsResponseBodyDomainRecords{
-				Record: []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{},
-			},
-		},
-	}, nil
+	return describeResponse(), nil
 }
 
-func TestAddTXTRecord(t *testing.T) {
+func TestDescribeRecordsUsesExactSearchAndFiltersResponse(t *testing.T) {
+	mockClient := &MockAliDNSClient{
+		DescribeDomainRecordsFunc: func(request *alidns.DescribeDomainRecordsRequest, _ *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
+			require.Equal(t, "example.com", tea.StringValue(request.DomainName))
+			require.Equal(t, "_acme-challenge", tea.StringValue(request.KeyWord))
+			require.Equal(t, "EXACT", tea.StringValue(request.SearchMode))
+			require.Nil(t, request.RRKeyWord)
+			require.Nil(t, request.Type)
+			require.Equal(t, int64(1), tea.Int64Value(request.PageNumber))
+			require.Equal(t, int64(pageSizeRequest), tea.Int64Value(request.PageSize))
+			return describeResponse(
+				record("exact", "_acme-challenge", "TXT", "target"),
+				record("similar", "_acme-challenge-api", "TXT", "target"),
+				record("wrong-type", "_acme-challenge", "A", "target"),
+			), nil
+		},
+	}
+
+	records, err := (&dnsProvider{client: mockClient}).DescribeRecords("example.com", "_acme-challenge")
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "exact", tea.StringValue(records[0].RecordId))
+}
+
+func TestDescribeRecordsPaginatesUsingUnfilteredCount(t *testing.T) {
+	callCount := 0
+	mockClient := &MockAliDNSClient{
+		DescribeDomainRecordsFunc: func(request *alidns.DescribeDomainRecordsRequest, _ *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
+			callCount++
+			require.Equal(t, int64(callCount), tea.Int64Value(request.PageNumber))
+			if callCount == 1 {
+				return describeResponseWithTotal(3,
+					record("similar", "_acme-challenge-other", "TXT", "target"),
+					record("first", "_acme-challenge", "TXT", "target"),
+				), nil
+			}
+			if callCount == 2 {
+				return describeResponseWithTotal(3, record("second", "_acme-challenge", "TXT", "target")), nil
+			}
+			t.Fatalf("unexpected page %d", callCount)
+			return nil, nil
+		},
+	}
+
+	records, err := (&dnsProvider{client: mockClient}).DescribeRecords("example.com", "_acme-challenge")
+	require.NoError(t, err)
+	assert.Equal(t, 2, callCount)
+	require.Len(t, records, 2)
+	assert.Equal(t, "first", tea.StringValue(records[0].RecordId))
+	assert.Equal(t, "second", tea.StringValue(records[1].RecordId))
+}
+
+func TestDescribeRecordsPropagatesPaginationError(t *testing.T) {
+	wantErr := errors.New("page two failed")
+	callCount := 0
+	mockClient := &MockAliDNSClient{
+		DescribeDomainRecordsFunc: func(_ *alidns.DescribeDomainRecordsRequest, _ *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
+			callCount++
+			if callCount == 2 {
+				return nil, wantErr
+			}
+			return describeResponseWithTotal(2, record("first", "_acme-challenge", "TXT", "target")), nil
+		},
+	}
+
+	_, err := (&dnsProvider{client: mockClient}).DescribeRecords("example.com", "_acme-challenge")
+	require.ErrorIs(t, err, wantErr)
+	assert.Equal(t, 2, callCount)
+}
+
+func TestAddTXTRecordConvergesDuplicatesAfterAdd(t *testing.T) {
+	describeCalls := 0
+	addCalls := 0
+	var deleted []string
+	mockClient := &MockAliDNSClient{
+		DescribeDomainRecordsFunc: func(_ *alidns.DescribeDomainRecordsRequest, _ *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
+			describeCalls++
+			if describeCalls == 1 {
+				return describeResponse(), nil
+			}
+			return describeResponse(
+				record("record-20", "_acme-challenge", "TXT", "target"),
+				record("record-03", "_acme-challenge", "TXT", "target"),
+				record("record-11", "_acme-challenge", "TXT", "target"),
+				record("other-value", "_acme-challenge", "TXT", "other"),
+			), nil
+		},
+		AddDomainRecordFunc: func(request *alidns.AddDomainRecordRequest, _ *util.RuntimeOptions) (*alidns.AddDomainRecordResponse, error) {
+			addCalls++
+			assert.Equal(t, "example.com", tea.StringValue(request.DomainName))
+			assert.Equal(t, "_acme-challenge", tea.StringValue(request.RR))
+			assert.Equal(t, recordType, tea.StringValue(request.Type))
+			assert.Equal(t, "target", tea.StringValue(request.Value))
+			return addResponse("record-20"), nil
+		},
+		DeleteDomainRecordFunc: func(request *alidns.DeleteDomainRecordRequest, _ *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error) {
+			deleted = append(deleted, tea.StringValue(request.RecordId))
+			return &alidns.DeleteDomainRecordResponse{}, nil
+		},
+	}
+
+	recordID, err := (&dnsProvider{client: mockClient}).AddTXTRecord("example.com", "_acme-challenge", "target")
+	require.NoError(t, err)
+	assert.Equal(t, "record-03", recordID)
+	assert.Equal(t, 1, addCalls)
+	assert.Equal(t, 2, describeCalls)
+	assert.Equal(t, []string{"record-11", "record-20"}, deleted)
+}
+
+func TestAddTXTRecordConvergesExistingDuplicatesWithoutAdd(t *testing.T) {
+	addCalled := false
+	var deleted []string
+	mockClient := &MockAliDNSClient{
+		DescribeDomainRecordsFunc: func(_ *alidns.DescribeDomainRecordsRequest, _ *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
+			return describeResponse(
+				record("z-id", "_acme-challenge", "TXT", "target"),
+				record("a-id", "_acme-challenge", "TXT", "target"),
+			), nil
+		},
+		AddDomainRecordFunc: func(_ *alidns.AddDomainRecordRequest, _ *util.RuntimeOptions) (*alidns.AddDomainRecordResponse, error) {
+			addCalled = true
+			return nil, nil
+		},
+		DeleteDomainRecordFunc: func(request *alidns.DeleteDomainRecordRequest, _ *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error) {
+			deleted = append(deleted, tea.StringValue(request.RecordId))
+			return &alidns.DeleteDomainRecordResponse{}, nil
+		},
+	}
+
+	recordID, err := (&dnsProvider{client: mockClient}).AddTXTRecord("example.com", "_acme-challenge", "target")
+	require.NoError(t, err)
+	assert.Equal(t, "a-id", recordID)
+	assert.False(t, addCalled)
+	assert.Equal(t, []string{"z-id"}, deleted)
+}
+
+func TestAddTXTRecordPropagatesErrors(t *testing.T) {
 	tests := []struct {
-		name            string
-		existingRecords []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord
-		addFuncCalled   bool
-		expectError     bool
-		errorMsg        string
+		name string
+		err  error
 	}{
-		{
-			name:            "new record - should create",
-			existingRecords: []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{},
-			addFuncCalled:   true,
-			expectError:     false,
-		},
-		{
-			name: "record already exists - should return existing",
-			existingRecords: []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{
-				{
-					RecordId: tea.String("existing-id"),
-					Value:    tea.String("test-value"),
-				},
-			},
-			addFuncCalled: false,
-			expectError:   false,
-		},
-		{
-			name:            "describe API error",
-			existingRecords: nil,
-			addFuncCalled:   false,
-			expectError:     true,
-			errorMsg:        "failed to describe records",
-		},
-		{
-			name:            "add API error",
-			existingRecords: []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{},
-			addFuncCalled:   true,
-			expectError:     true,
-			errorMsg:        "failed to add domain record",
-		},
+		{name: "initial describe", err: errors.New("initial describe failed")},
+		{name: "add", err: errors.New("add failed")},
+		{name: "post-add describe", err: errors.New("post-add describe failed")},
+		{name: "dedup delete", err: errors.New("delete failed")},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			addCalled := false
-			mockClient := &MockAliDNSClient{
-				DescribeDomainRecordsFunc: func(request *alidns.DescribeDomainRecordsRequest, runtime *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
-					if tt.existingRecords == nil && tt.expectError && tt.name == "describe API error" {
-						return nil, errors.New("describe API error")
-					}
-					return &alidns.DescribeDomainRecordsResponse{
-						Body: &alidns.DescribeDomainRecordsResponseBody{
-							TotalCount: tea.Int64(int64(len(tt.existingRecords))),
-							DomainRecords: &alidns.DescribeDomainRecordsResponseBodyDomainRecords{
-								Record: tt.existingRecords,
-							},
-						},
-					}, nil
-				},
-				AddDomainRecordFunc: func(request *alidns.AddDomainRecordRequest, runtime *util.RuntimeOptions) (*alidns.AddDomainRecordResponse, error) {
-					addCalled = true
-					if tt.expectError && tt.name == "add API error" {
-						return nil, errors.New("add API error")
-					}
-					return &alidns.AddDomainRecordResponse{
-						Body: &alidns.AddDomainRecordResponseBody{
-							RecordId: tea.String("new-record-id"),
-						},
-					}, nil
-				},
-			}
-
-			provider := &dnsProvider{client: mockClient}
-			recordID, err := provider.AddTXTRecord("example.com", "_acme-challenge", "test-value")
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorMsg != "" {
-					assert.Contains(t, err.Error(), tt.errorMsg)
-				}
-			} else {
-				assert.NoError(t, err)
+			describeCalls := 0
+			mockClient := &MockAliDNSClient{}
+			mockClient.DescribeDomainRecordsFunc = func(_ *alidns.DescribeDomainRecordsRequest, _ *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
+				describeCalls++
 				switch tt.name {
-				case "record already exists - should return existing":
-					assert.Equal(t, "existing-id", recordID)
-				case "new record - should create":
-					assert.Equal(t, "new-record-id", recordID)
+				case "initial describe":
+					return nil, tt.err
+				case "post-add describe":
+					if describeCalls == 2 {
+						return nil, tt.err
+					}
+				case "dedup delete":
+					return describeResponse(
+						record("a-id", "_acme-challenge", "TXT", "target"),
+						record("b-id", "_acme-challenge", "TXT", "target"),
+					), nil
 				}
+				return describeResponse(), nil
 			}
-			assert.Equal(t, tt.addFuncCalled, addCalled)
+			mockClient.AddDomainRecordFunc = func(_ *alidns.AddDomainRecordRequest, _ *util.RuntimeOptions) (*alidns.AddDomainRecordResponse, error) {
+				if tt.name == "add" {
+					return nil, tt.err
+				}
+				return addResponse("new-id"), nil
+			}
+			mockClient.DeleteDomainRecordFunc = func(_ *alidns.DeleteDomainRecordRequest, _ *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error) {
+				return nil, tt.err
+			}
+
+			_, err := (&dnsProvider{client: mockClient}).AddTXTRecord("example.com", "_acme-challenge", "target")
+			require.ErrorIs(t, err, tt.err)
 		})
 	}
+}
+
+func TestDeleteRecordsByKeyDeletesOnlyExactRRAndValue(t *testing.T) {
+	var deleted []string
+	mockClient := &MockAliDNSClient{
+		DescribeDomainRecordsFunc: func(_ *alidns.DescribeDomainRecordsRequest, _ *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
+			return describeResponse(
+				record("target", "_acme-challenge", "TXT", "challenge-key"),
+				record("other-value", "_acme-challenge", "TXT", "other-key"),
+				record("similar-rr", "_acme-challenge-api", "TXT", "challenge-key"),
+				record("wrong-type", "_acme-challenge", "A", "challenge-key"),
+			), nil
+		},
+		DeleteDomainRecordFunc: func(request *alidns.DeleteDomainRecordRequest, _ *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error) {
+			deleted = append(deleted, tea.StringValue(request.RecordId))
+			return &alidns.DeleteDomainRecordResponse{}, nil
+		},
+	}
+
+	err := (&dnsProvider{client: mockClient}).DeleteRecordsByKey("example.com", "_acme-challenge", "challenge-key")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"target"}, deleted)
+}
+
+func TestDeleteRecordsByKeyPropagatesErrors(t *testing.T) {
+	t.Run("describe", func(t *testing.T) {
+		wantErr := errors.New("describe failed")
+		provider := &dnsProvider{client: &MockAliDNSClient{
+			DescribeDomainRecordsFunc: func(_ *alidns.DescribeDomainRecordsRequest, _ *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
+				return nil, wantErr
+			},
+		}}
+		require.ErrorIs(t, provider.DeleteRecordsByKey("example.com", "rr", "value"), wantErr)
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		wantErr := errors.New("delete failed")
+		provider := &dnsProvider{client: &MockAliDNSClient{
+			DescribeDomainRecordsFunc: func(_ *alidns.DescribeDomainRecordsRequest, _ *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
+				return describeResponse(record("id", "rr", "TXT", "value")), nil
+			},
+			DeleteDomainRecordFunc: func(_ *alidns.DeleteDomainRecordRequest, _ *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error) {
+				return nil, wantErr
+			},
+		}}
+		require.ErrorIs(t, provider.DeleteRecordsByKey("example.com", "rr", "value"), wantErr)
+	})
 }
 
 func TestDeleteRecord(t *testing.T) {
-	tests := []struct {
-		name        string
-		recordID    string
-		expectError bool
-		errorMsg    string
-	}{
-		{
-			name:        "successful deletion",
-			recordID:    "test-record-id",
-			expectError: false,
-		},
-		{
-			name:        "API error",
-			recordID:    "test-record-id",
-			expectError: true,
-			errorMsg:    "failed to delete domain record",
+	wantErr := errors.New("delete failed")
+	mockClient := &MockAliDNSClient{
+		DeleteDomainRecordFunc: func(request *alidns.DeleteDomainRecordRequest, _ *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error) {
+			assert.Equal(t, "record-id", tea.StringValue(request.RecordId))
+			return nil, wantErr
 		},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mockClient := &MockAliDNSClient{
-				DeleteDomainRecordFunc: func(request *alidns.DeleteDomainRecordRequest, runtime *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error) {
-					if tt.expectError {
-						return nil, errors.New("delete API error")
-					}
-					return &alidns.DeleteDomainRecordResponse{}, nil
-				},
-			}
-
-			provider := &dnsProvider{client: mockClient}
-			err := provider.DeleteRecord(tt.recordID)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errorMsg)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-func TestDeleteRecordsByKey(t *testing.T) {
-	tests := []struct {
-		name         string
-		records      []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord
-		expectDelete int
-		expectError  bool
-	}{
-		{
-			name: "single matching record",
-			records: []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{
-				{
-					RecordId: tea.String("record-1"),
-					Value:    tea.String("target-value"),
-				},
-			},
-			expectDelete: 1,
-			expectError:  false,
-		},
-		{
-			name: "multiple matching records",
-			records: []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{
-				{
-					RecordId: tea.String("record-1"),
-					Value:    tea.String("target-value"),
-				},
-				{
-					RecordId: tea.String("record-2"),
-					Value:    tea.String("target-value"),
-				},
-			},
-			expectDelete: 2,
-			expectError:  false,
-		},
-		{
-			name:         "no matching records",
-			records:      []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{},
-			expectDelete: 0,
-			expectError:  false,
-		},
-		{
-			name:         "describe API error",
-			records:      nil,
-			expectDelete: 0,
-			expectError:  true,
-		},
-		{
-			name: "delete API error",
-			records: []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{
-				{
-					RecordId: tea.String("record-1"),
-					Value:    tea.String("target-value"),
-				},
-			},
-			expectDelete: 1,
-			expectError:  true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			deleteCalled := 0
-			mockClient := &MockAliDNSClient{
-				DescribeDomainRecordsFunc: func(request *alidns.DescribeDomainRecordsRequest, runtime *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
-					if tt.name == "describe API error" {
-						return nil, errors.New("describe API error")
-					}
-					return &alidns.DescribeDomainRecordsResponse{
-						Body: &alidns.DescribeDomainRecordsResponseBody{
-							TotalCount: tea.Int64(int64(len(tt.records))),
-							DomainRecords: &alidns.DescribeDomainRecordsResponseBodyDomainRecords{
-								Record: tt.records,
-							},
-						},
-					}, nil
-				},
-				DeleteDomainRecordFunc: func(request *alidns.DeleteDomainRecordRequest, runtime *util.RuntimeOptions) (*alidns.DeleteDomainRecordResponse, error) {
-					deleteCalled++
-					if tt.name == "delete API error" {
-						return nil, errors.New("delete API error")
-					}
-					return &alidns.DeleteDomainRecordResponse{}, nil
-				},
-			}
-
-			provider := &dnsProvider{client: mockClient}
-			err := provider.DeleteRecordsByKey("example.com", "_acme-challenge", "target-value")
-
-			if tt.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-			assert.Equal(t, tt.expectDelete, deleteCalled)
-		})
-	}
-}
-
-func TestDescribeRecords(t *testing.T) {
-	tests := []struct {
-		name           string
-		totalCount     int64
-		recordsPerPage int // Mock 每次返回的记录数
-		expectCalls    int // 期望调用 API 的次数
-		expectCount    int // 期望返回的总记录数
-		expectError    bool
-	}{
-		{
-			name:           "single page - less than pageSizeRequest",
-			totalCount:     3,
-			recordsPerPage: 3,
-			expectCalls:    1,
-			expectCount:    3,
-			expectError:    false,
-		},
-		{
-			name:           "exactly one page - equal to pageSizeRequest",
-			totalCount:     100,
-			recordsPerPage: 100,
-			expectCalls:    1,
-			expectCount:    100,
-			expectError:    false,
-		},
-		{
-			name:           "multiple pages - requires 2 calls",
-			totalCount:     150,
-			recordsPerPage: 100,
-			expectCalls:    2,
-			expectCount:    150,
-			expectError:    false,
-		},
-		{
-			name:           "multiple pages - requires 3 calls",
-			totalCount:     250,
-			recordsPerPage: 100,
-			expectCalls:    3,
-			expectCount:    250,
-			expectError:    false,
-		},
-		{
-			name:           "empty result",
-			totalCount:     0,
-			recordsPerPage: 0,
-			expectCalls:    1,
-			expectCount:    0,
-			expectError:    false,
-		},
-		{
-			name:           "API error",
-			totalCount:     0,
-			recordsPerPage: 0,
-			expectCalls:    0,
-			expectCount:    0,
-			expectError:    true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			callCount := 0
-			mockClient := &MockAliDNSClient{
-				DescribeDomainRecordsFunc: func(request *alidns.DescribeDomainRecordsRequest, runtime *util.RuntimeOptions) (*alidns.DescribeDomainRecordsResponse, error) {
-					if tt.expectError && tt.name == "API error" {
-						return nil, errors.New("API error")
-					}
-
-					callCount++
-					// 验证请求参数
-					assert.Equal(t, "example.com", *request.DomainName)
-					assert.Equal(t, "_acme-challenge", *request.RRKeyWord)
-					assert.Equal(t, "TXT", *request.Type)
-					assert.Equal(t, int64(pageSizeRequest), *request.PageSize) // 应该总是 100
-					assert.Equal(t, int64(callCount), *request.PageNumber)
-
-					// 计算这次调用应该返回多少条记录
-					remaining := tt.totalCount - int64((callCount-1)*tt.recordsPerPage)
-					records := []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{}
-
-					if remaining > 0 && tt.name != "empty result" {
-						count := int(remaining)
-						if count > tt.recordsPerPage {
-							count = tt.recordsPerPage
-						}
-						for i := 0; i < count; i++ {
-							records = append(records, &alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{
-								RecordId: tea.String(fmt.Sprintf("record-%d", (callCount-1)*tt.recordsPerPage+i)),
-							})
-						}
-					}
-
-					return &alidns.DescribeDomainRecordsResponse{
-						Body: &alidns.DescribeDomainRecordsResponseBody{
-							TotalCount: tea.Int64(tt.totalCount),
-							DomainRecords: &alidns.DescribeDomainRecordsResponseBodyDomainRecords{
-								Record: records,
-							},
-						},
-					}, nil
-				},
-			}
-
-			provider := &dnsProvider{client: mockClient}
-			records, err := provider.DescribeRecords("example.com", "_acme-challenge")
-
-			if tt.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expectCount, len(records))
-				// 验证确实调用了预期的次数
-				assert.Equal(t, tt.expectCalls, callCount, "API call count mismatch")
-			}
-		})
-	}
+	require.ErrorIs(t, (&dnsProvider{client: mockClient}).DeleteRecord("record-id"), wantErr)
 }
 
 func TestGetEndpoint(t *testing.T) {
-	tests := []struct {
-		name           string
-		envRegion      string
-		expectedResult string
+	for _, tt := range []struct {
+		region string
+		want   string
 	}{
-		{
-			name:           "default endpoint - no env var",
-			envRegion:      "",
-			expectedResult: "alidns.aliyuncs.com",
-		},
-		{
-			name:           "custom region - cn-hangzhou",
-			envRegion:      "cn-hangzhou",
-			expectedResult: "alidns.cn-hangzhou.aliyuncs.com",
-		},
-		{
-			name:           "custom region - cn-beijing",
-			envRegion:      "cn-beijing",
-			expectedResult: "alidns.cn-beijing.aliyuncs.com",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Save and restore original env var
-			originalValue := os.Getenv("ALIBABA_CLOUD_REGION_ID")
-			defer func() {
-				if originalValue != "" {
-					mustSetEnv(t, "ALIBABA_CLOUD_REGION_ID", originalValue)
-				} else {
-					mustUnsetEnv(t, "ALIBABA_CLOUD_REGION_ID")
-				}
-			}()
-
-			// Set test env var
-			if tt.envRegion != "" {
-				mustSetEnv(t, "ALIBABA_CLOUD_REGION_ID", tt.envRegion)
-			} else {
-				mustUnsetEnv(t, "ALIBABA_CLOUD_REGION_ID")
-			}
-
-			result := getEndpoint()
-			assert.Equal(t, tt.expectedResult, result)
+		{region: "", want: defaultEndpoint},
+		{region: "cn-hangzhou", want: "alidns.cn-hangzhou.aliyuncs.com"},
+		{region: "cn-beijing", want: "alidns.cn-beijing.aliyuncs.com"},
+	} {
+		t.Run(fmt.Sprintf("region=%s", tt.region), func(t *testing.T) {
+			t.Setenv("ALIBABA_CLOUD_REGION_ID", tt.region)
+			assert.Equal(t, tt.want, getEndpoint())
 		})
 	}
 }
 
-func mustSetEnv(t *testing.T, key, value string) {
-	t.Helper()
-	require.NoError(t, os.Setenv(key, value))
+func record(id, rr, recordType, value string) *alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord {
+	return &alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord{
+		RecordId: tea.String(id),
+		RR:       tea.String(rr),
+		Type:     tea.String(recordType),
+		Value:    tea.String(value),
+	}
 }
 
-func mustUnsetEnv(t *testing.T, key string) {
-	t.Helper()
-	require.NoError(t, os.Unsetenv(key))
+func describeResponse(records ...*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord) *alidns.DescribeDomainRecordsResponse {
+	return describeResponseWithTotal(int64(len(records)), records...)
+}
+
+func describeResponseWithTotal(total int64, records ...*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord) *alidns.DescribeDomainRecordsResponse {
+	return &alidns.DescribeDomainRecordsResponse{
+		Body: &alidns.DescribeDomainRecordsResponseBody{
+			TotalCount: tea.Int64(total),
+			DomainRecords: &alidns.DescribeDomainRecordsResponseBodyDomainRecords{
+				Record: records,
+			},
+		},
+	}
+}
+
+func addResponse(recordID string) *alidns.AddDomainRecordResponse {
+	return &alidns.AddDomainRecordResponse{
+		Body: &alidns.AddDomainRecordResponseBody{RecordId: tea.String(recordID)},
+	}
 }

@@ -1,82 +1,100 @@
-# The groupName avoids naming conflicts on the Kubernetes API, it should be set by the
-# author of the webhook a unique domain that the author owns. For
-# example: some-provider-webhook.mycompany.tld , or
-# some-provider-webhook.mypersonalsite.tld if your webhook is a personal open-source
-# project.
-# Once set to a unique domain name by the webhook author, it does not need to be further
-# adjusted by the users of a webhook chart!
-# The name will need to be referenced in each Issuer's `webhook` stanza to
-# inform cert-manager of where to send ChallengePayload resources in order to
-# solve the DNS01 challenge.
-groupName: alidns.crazygit.github.io
+# -- Aggregated API group exposed by this webhook. Issuer references must match.
+groupName: alidns.bernylinville.github.io
+
+# -- DNS zones the webhook may mutate. Values are normalized and matched exactly.
+allowedZones:
+  - pksl.net.cn
 
 certManager:
   namespace: cert-manager
   serviceAccountName: cert-manager
 
 image:
-  repository: ghcr.io/crazygit/cert-manager-alidns-webhook
+  repository: ghcr.io/bernylinville/cert-manager-alidns-webhook
   tag: ""
   pullPolicy: IfNotPresent
+  # -- Optional sha256 manifest digest. When set, deployment renders tag@digest.
+  digest: ""
+
+# -- Image pull secrets attached to the webhook Pod.
+imagePullSecrets: []
 
 nameOverride: ""
 fullnameOverride: ""
 
-# -- Replica count for the webhook deployment
-replicaCount: 1
+# -- Replica count for the webhook deployment.
+replicaCount: 2
+
+# -- Unprivileged HTTPS port listened on by the non-root webhook container.
+securePort: 10250
 
 service:
-  # -- Service type
   type: ClusterIP
-  # -- Service port
   port: 443
 
-# -- Alibaba Cloud Authentication configuration
-# Supports multiple authentication methods via the Alibaba Cloud credentials-go default credential chain.
-# Priority: Env Vars AK/SK > RRSA > config.json > ECS Role > Credentials URI
+# -- Alibaba Cloud authentication via the credentials-go default chain.
 aliyunAuth:
-  # -- Alibaba Cloud region ID (e.g., cn-hangzhou). If empty, the default endpoint will be used.
   regionID: ""
-
-  # -- AccessKey ID (Method 1: Direct configuration, not recommended for production)
   accessKeyID: ""
-  # -- AccessKey Secret (Method 1: Direct configuration, not recommended for production)
   accessKeySecret: ""
-
-  # -- Name of an existing Secret containing credentials (Method 2: Recommended for testing)
-  # The secret must contain `accessKeyID` and `accessKeySecret` keys.
   existingSecret: ""
-
-  # -- RRSA (RAM Roles for Service Accounts) configuration (Method 3: Recommended for production)
-  # Requires OIDC Provider configured in your cluster.
   rrsa:
-    # -- Enable RRSA authentication
     enabled: false
-    # -- RAM role name (just the name, not the full ARN)
     roleName: ""
-  # Method 4: ECS Instance RAM Role (automatic, no config required)
-  # Method 5: config.json file via ConfigMap (optional)
   configJSON:
-    # -- Enable config.json authentication
     enabled: false
-    # -- ConfigMap name containing the config.json file
     configMapName: ""
 
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+
 resources:
-  {}
-  # We usually recommend not to specify default resources and to leave this as a conscious
-  # choice for the user. This also increases chances charts run on environments with little
-  # resources, such as Minikube. If you do want to specify resources, uncomment the following
-  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
-  # limits:
-  #   cpu: 100m
-  #   memory: 128Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 32Mi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  maxUnavailable: null
+
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+
+# -- Generated anti-affinity. Disable before defining podAntiAffinity in affinity.
+podAntiAffinity:
+  enabled: true
+  topologyKey: kubernetes.io/hostname
+  weight: 100
 
 nodeSelector: {}
-
 tolerations: []
-
 affinity: {}
+
+networkPolicy:
+  enabled: false
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: https
+          protocol: TCP
+  egress: []

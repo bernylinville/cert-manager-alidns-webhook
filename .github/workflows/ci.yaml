@@ -20,10 +20,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Cache Go modules
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cache/go-build
@@ -33,19 +33,25 @@ jobs:
             ${{ runner.os }}-go-
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: "go.mod"
+          go-version: "1.26.6"
 
       - name: Run go vet
         run: go vet ./...
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: Run govulncheck
+        run: govulncheck ./...
 
       - name: Run tests
         run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
         if: success() || failure()
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.txt
@@ -57,10 +63,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: v3.16.0
 
@@ -68,20 +74,71 @@ jobs:
         run: |
           helm lint deploy/cert-manager-alidns-webhook
 
+      - name: Verify unprivileged listener wiring
+        run: |
+          helm template validation deploy/cert-manager-alidns-webhook --namespace cert-manager | awk '
+            /- --secure-port=10250/ { secure_port_arg = 1 }
+            /containerPort: 10250/ { container_port = 1 }
+            /port: 443/ { service_port = 1 }
+            /targetPort: https/ { service_target = 1 }
+            END { exit !(secure_port_arg && container_port && service_port && service_target) }
+          '
+          if helm lint deploy/cert-manager-alidns-webhook --set securePort=443; then
+            echo "expected values schema to reject privileged securePort" >&2
+            exit 1
+          fi
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Scan filesystem with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: cert-manager-alidns-webhook:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: cert-manager-alidns-webhook:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
   version-check:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check release version sync
         run: ./scripts/check-version.sh
 
   docker-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, helm-lint, version-check]
+    needs: [test, helm-lint, security, version-check]
     uses: ./.github/workflows/docker-release.yaml
     secrets: inherit
     permissions:
@@ -91,7 +148,7 @@ jobs:
 
   helm-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, helm-lint, version-check]
+    needs: [test, helm-lint, security, version-check]
     uses: ./.github/workflows/helm-release.yaml
     secrets: inherit
     permissions:
@@ -108,23 +165,33 @@ jobs:
     steps:
       - name: Extract version without prefix
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           body: |
-            ## Docker Image
+            ## Container image
 
             ```bash
-            docker pull ghcr.io/crazygit/cert-manager-alidns-webhook:${{ steps.version.outputs.version }}
+            docker pull ghcr.io/${{ github.repository_owner }}/cert-manager-alidns-webhook:${{ steps.version.outputs.version }}
             ```
 
-            ## Helm Chart
+            The multi-architecture image includes BuildKit SBOM and SLSA provenance attestations and is signed keylessly with Cosign.
 
             ```bash
-            helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook \
-              --version ${{ steps.version.outputs.version }}
+            cosign verify \
+              --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.github/workflows/docker-release.yaml@" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              ghcr.io/${{ github.repository_owner }}/cert-manager-alidns-webhook:${{ steps.version.outputs.version }}
+            ```
+
+            ## Helm chart
+
+            ```bash
+            helm install cert-manager-alidns-webhook oci://ghcr.io/${{ github.repository_owner }}/charts/cert-manager-alidns-webhook \
+              --version ${{ steps.version.outputs.version }} \
+              --set allowedZones[0]=pksl.net.cn
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

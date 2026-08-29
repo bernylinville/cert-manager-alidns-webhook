@@ -3,6 +3,7 @@ package alidns
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	alidns "github.com/alibabacloud-go/alidns-20150109/v5/client"
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
@@ -61,36 +62,47 @@ func NewDNSProvider() (DNSProvider, error) {
 
 // AddTXTRecord 添加 TXT 记录
 func (p *dnsProvider) AddTXTRecord(domain, rr, value string) (string, error) {
-	// 查询现有记录
 	records, err := p.DescribeRecords(domain, rr)
 	if err != nil {
 		return "", fmt.Errorf("failed to describe records: %w", err)
 	}
 
-	// 检查是否已存在相同值的记录
-	for _, record := range records {
-		if record.Value != nil && *record.Value == value {
-			// 记录已存在，直接返回
-			return *record.RecordId, nil
-		}
+	if recordID, found, err := p.convergeRecords(records, value); found || err != nil {
+		return recordID, err
 	}
 
-	// 添加新记录
 	request := &alidns.AddDomainRecordRequest{
 		DomainName: tea.String(domain),
 		RR:         tea.String(rr),
-		Type:       tea.String("TXT"),
+		Type:       tea.String(recordType),
 		Value:      tea.String(value),
 	}
 
-	runtime := &util.RuntimeOptions{}
-	response, err := p.client.AddDomainRecordWithOptions(request, runtime)
+	response, err := p.client.AddDomainRecordWithOptions(request, &util.RuntimeOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to add domain record: %w", err)
 	}
 
-	recordId := *response.Body.RecordId
-	return recordId, nil
+	createdRecordID := ""
+	if response != nil && response.Body != nil && response.Body.RecordId != nil {
+		createdRecordID = *response.Body.RecordId
+	}
+
+	// Re-read after creation so concurrent Present calls converge on one record.
+	records, err = p.DescribeRecords(domain, rr)
+	if err != nil {
+		return "", fmt.Errorf("failed to describe records after add: %w", err)
+	}
+	if recordID, found, err := p.convergeRecords(records, value); found || err != nil {
+		return recordID, err
+	}
+	if createdRecordID == "" {
+		return "", fmt.Errorf("add domain record response did not contain a RecordId")
+	}
+
+	// AliDNS can be eventually consistent. The add response is authoritative if
+	// the newly-created record is not visible in the immediate re-read.
+	return createdRecordID, nil
 }
 
 // DeleteRecord 删除 TXT 记录
@@ -110,57 +122,97 @@ func (p *dnsProvider) DeleteRecord(recordId string) error {
 
 // DeleteRecordsByKey 根据 domain、rr、value 删除记录
 func (p *dnsProvider) DeleteRecordsByKey(domain, rr, value string) error {
-	// 查询记录
 	records, err := p.DescribeRecords(domain, rr)
 	if err != nil {
 		return fmt.Errorf("failed to describe records: %w", err)
 	}
 
-	// 删除匹配的记录
 	for _, record := range records {
-		if record.Value != nil && *record.Value == value {
-			if err := p.DeleteRecord(*record.RecordId); err != nil {
-				return err
-			}
+		if record.Value == nil || *record.Value != value {
+			continue
+		}
+		if record.RecordId == nil || *record.RecordId == "" {
+			return fmt.Errorf("matching TXT record is missing RecordId")
+		}
+		if err := p.DeleteRecord(*record.RecordId); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-// DescribeRecords 查询记录
+// DescribeRecords 查询指定 RR 的精确 TXT 记录。
 func (p *dnsProvider) DescribeRecords(domain, rr string) ([]*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord, error) {
-	var allRecords []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord
-	pageNumber := int64(1)
-	pageSize := int64(pageSizeRequest)
+	var exactRecords []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord
+	var recordsSeen int64
 
-	for {
+	for pageNumber := int64(1); ; pageNumber++ {
+		// AliDNS EXACT mode uses KeyWord. RRKeyWord and Type are ignored in that
+		// mode, so RR and TXT are also checked locally below.
 		request := &alidns.DescribeDomainRecordsRequest{
 			DomainName: tea.String(domain),
-			RRKeyWord:  tea.String(rr),
-			Type:       tea.String(recordType),
+			KeyWord:    tea.String(rr),
+			SearchMode: tea.String("EXACT"),
 			PageNumber: tea.Int64(pageNumber),
-			PageSize:   tea.Int64(pageSize),
+			PageSize:   tea.Int64(pageSizeRequest),
 		}
 
-		runtime := &util.RuntimeOptions{}
-		response, err := p.client.DescribeDomainRecordsWithOptions(request, runtime)
+		response, err := p.client.DescribeDomainRecordsWithOptions(request, &util.RuntimeOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to describe domain records: %w", err)
 		}
-
-		if response.Body.DomainRecords != nil && response.Body.DomainRecords.Record != nil {
-			allRecords = append(allRecords, response.Body.DomainRecords.Record...)
+		if response == nil || response.Body == nil {
+			return nil, fmt.Errorf("failed to describe domain records: empty response")
 		}
 
-		// 如果没有更多记录，退出循环
-		if response.Body.TotalCount == nil || int64(len(allRecords)) >= *response.Body.TotalCount {
+		var pageRecords []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord
+		if response.Body.DomainRecords != nil {
+			pageRecords = response.Body.DomainRecords.Record
+		}
+		recordsSeen += int64(len(pageRecords))
+		for _, record := range pageRecords {
+			if record != nil && record.RR != nil && *record.RR == rr &&
+				record.Type != nil && *record.Type == recordType {
+				exactRecords = append(exactRecords, record)
+			}
+		}
+
+		if response.Body.TotalCount == nil || recordsSeen >= *response.Body.TotalCount || len(pageRecords) == 0 {
 			break
 		}
-		pageNumber++
 	}
 
-	return allRecords, nil
+	return exactRecords, nil
+}
+
+// convergeRecords deterministically keeps the lexicographically smallest
+// RecordId for value and removes all other exact RR/TXT duplicates.
+func (p *dnsProvider) convergeRecords(records []*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord, value string) (string, bool, error) {
+	matching := make([]*alidns.DescribeDomainRecordsResponseBodyDomainRecordsRecord, 0)
+	for _, record := range records {
+		if record.Value != nil && *record.Value == value {
+			if record.RecordId == nil || *record.RecordId == "" {
+				return "", true, fmt.Errorf("matching TXT record is missing RecordId")
+			}
+			matching = append(matching, record)
+		}
+	}
+	if len(matching) == 0 {
+		return "", false, nil
+	}
+
+	sort.Slice(matching, func(i, j int) bool {
+		return *matching[i].RecordId < *matching[j].RecordId
+	})
+	keptRecordID := *matching[0].RecordId
+	for _, duplicate := range matching[1:] {
+		if err := p.DeleteRecord(*duplicate.RecordId); err != nil {
+			return "", true, fmt.Errorf("failed to remove duplicate TXT record %s: %w", *duplicate.RecordId, err)
+		}
+	}
+
+	return keptRecordID, true, nil
 }
 
 func getEndpoint() string {

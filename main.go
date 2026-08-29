@@ -5,12 +5,12 @@ import (
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/cmd"
 
-	"github.com/crazygit/cert-manager-alidns-webhook/pkg/alidns"
+	"github.com/bernylinville/cert-manager-alidns-webhook/pkg/alidns"
 )
 
 var GroupName = os.Getenv("GROUP_NAME")
 
-const defaultGroupName = "alidns.crazygit.github.io"
+const defaultGroupName = "alidns.bernylinville.github.io"
 
 func main() {
 	if GroupName == "" {

@@ -2,6 +2,7 @@ package alidns
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"log/slog"
@@ -18,15 +19,11 @@ import (
 // To do so, it must implement the `github.com/cert-manager/cert-manager/pkg/acme/webhook.Solver`
 // interface.
 // 实现 cert-manager webhook Solver interface
+const allowedZonesEnv = "ALIDNS_ALLOWED_ZONES"
+
 type Solver struct {
-	// If a Kubernetes 'clientset' is needed, you must:
-	// 1. uncomment the additional `dnsProvider` field in this structure below
-	// 2. uncomment the "k8s.io/dnsProvider-go/kubernetes" import at the top of the file
-	// 3. uncomment the relevant code in the Initialize method below
-	// 4. ensure your webhook's service account has the required RBAC role
-	//    assigned to it for interacting with the Kubernetes APIs you need.
-	//dnsProvider kubernetes.Clientset
-	dnsProvider DNSProvider
+	dnsProvider  DNSProvider
+	allowedZones map[string]struct{}
 }
 
 func NewSolver(dnsProvider DNSProvider) *Solver {
@@ -80,6 +77,9 @@ func (s *Solver) Present(ch *v1alpha1.ChallengeRequest) error {
 	if s.dnsProvider == nil {
 		return fmt.Errorf("alidns client not initialized")
 	}
+	if err := s.ensureZoneAllowed(ch.ResolvedZone); err != nil {
+		return err
+	}
 
 	// not required in this solver
 	// cfg, err := loadConfig(ch.Config)
@@ -116,6 +116,9 @@ func (s *Solver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
 	if s.dnsProvider == nil {
 		return fmt.Errorf("alidns client not initialized")
 	}
+	if err := s.ensureZoneAllowed(ch.ResolvedZone); err != nil {
+		return err
+	}
 
 	// not required in this solver
 	// cfg, err := loadConfig(ch.Config)
@@ -150,20 +153,71 @@ func (s *Solver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
 // The stopCh can be used to handle early termination of the webhook, in cases
 // where a SIGTERM or similar signal is sent to the webhook process.
 func (s *Solver) Initialize(kubeClientConfig *rest.Config, stopCh <-chan struct{}) error {
-	// 如果需要 Kubernetes 客户端（例如从 Secret 读取配置），可以在这里初始化
-	// if kubeClientConfig != nil {
-	// 	cl, err := kubernetes.NewForConfig(kubeClientConfig)
-	// 	if err != nil {
-	// 		return fmt.Errorf("failed to create kubernetes client: %w", err)
-	// 	}
-	// 	_ = cl // 避免未使用变量警告
-	// }
+	allowedZones, err := parseAllowedZones(os.Getenv(allowedZonesEnv))
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", allowedZonesEnv, err)
+	}
+
 	client, err := NewDNSProvider()
 	if err != nil {
 		return fmt.Errorf("failed to create alidns client: %w", err)
 	}
+	s.allowedZones = allowedZones
 	s.dnsProvider = client
 	return nil
+}
+
+func (s *Solver) ensureZoneAllowed(zone string) error {
+	normalized, err := normalizeZone(zone)
+	if err != nil {
+		return fmt.Errorf("invalid resolved zone %q: %w", zone, err)
+	}
+	if _, allowed := s.allowedZones[normalized]; !allowed {
+		return fmt.Errorf("resolved zone %q is not allowed", normalized)
+	}
+	return nil
+}
+
+func parseAllowedZones(raw string) (map[string]struct{}, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, fmt.Errorf("must contain at least one DNS zone")
+	}
+
+	allowed := make(map[string]struct{})
+	for _, item := range strings.Split(raw, ",") {
+		if strings.TrimSpace(item) == "" {
+			return nil, fmt.Errorf("contains an empty DNS zone")
+		}
+		zone, err := normalizeZone(item)
+		if err != nil {
+			return nil, fmt.Errorf("zone %q: %w", strings.TrimSpace(item), err)
+		}
+		allowed[zone] = struct{}{}
+	}
+	return allowed, nil
+}
+
+func normalizeZone(zone string) (string, error) {
+	zone = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")
+	if zone == "" || len(zone) > 253 {
+		return "", fmt.Errorf("is not a valid DNS zone")
+	}
+
+	ascii, err := idna.Lookup.ToASCII(zone)
+	if err != nil {
+		return "", fmt.Errorf("is not a valid IDNA DNS zone: %w", err)
+	}
+	for _, label := range strings.Split(ascii, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", fmt.Errorf("is not a valid DNS zone")
+		}
+		for _, char := range label {
+			if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+				return "", fmt.Errorf("is not a valid DNS zone")
+			}
+		}
+	}
+	return ascii, nil
 }
 
 // loadConfig is a small helper function that decodes JSON configuration into

@@ -6,6 +6,7 @@ import (
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // MockDNSProvider is a mock implementation of DNSProvider
@@ -33,24 +34,15 @@ func TestSolver_Name(t *testing.T) {
 	assert.Equal(t, "alidns", solver.Name(), "Expected solver name to be 'alidns'")
 }
 
-func TestSolver_Initialize(t *testing.T) {
-	solver := &Solver{}
-	stopCh := make(chan struct{})
-
-	// Initialize with nil config - should still work as it only creates k8s client
-	// Note: This relies on NewClient() which might require env vars.
-	// If it fails due to missing creds, we might need to mock NewClient or skip this test if env is missing.
-	// For now we assume NewClient checks creds lazily or envs are present/optional.
-	err := solver.Initialize(nil, stopCh)
-
-	// If NewClient fails (e.g. no creds), we verify that. If it succeeds, we verify client is set.
-	if err == nil {
-		assert.NotNil(t, solver.dnsProvider, "Expected client to be created")
-	} else {
-		// Log the error but don't fail if it's just credential missing in test env
-		t.Logf("Initialize failed (expected if no creds): %v", err)
+func TestSolver_InitializeRejectsInvalidAllowedZones(t *testing.T) {
+	for _, value := range []string{"", "example.com,", "bad..example", "bad_name.example"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(allowedZonesEnv, value)
+			err := (&Solver{}).Initialize(nil, make(chan struct{}))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), allowedZonesEnv)
+		})
 	}
-	close(stopCh)
 }
 
 func TestExtractDomainAndRR(t *testing.T) {
@@ -113,18 +105,19 @@ func TestSolver_Present(t *testing.T) {
 	mockProvider := &MockDNSProvider{
 		AddTXTRecordFunc: func(domain, rr, value string) (string, error) {
 			assert.Equal(t, "example.com", domain)
-			assert.Equal(t, "_acme-challenge", rr)
+			assert.Equal(t, "_acme-challenge.api", rr)
 			assert.Equal(t, "test-key-value", value)
 			return "12345", nil
 		},
 	}
 
 	solver := &Solver{
-		dnsProvider: mockProvider,
+		dnsProvider:  mockProvider,
+		allowedZones: allowedZoneSet("example.com"),
 	}
 
 	ch := &v1alpha1.ChallengeRequest{
-		ResolvedFQDN: "_acme-challenge.example.com.",
+		ResolvedFQDN: "_acme-challenge.api.example.com.",
 		ResolvedZone: "example.com.",
 		Key:          "test-key-value",
 	}
@@ -141,7 +134,8 @@ func TestSolver_Present_Error(t *testing.T) {
 	}
 
 	solver := &Solver{
-		dnsProvider: mockProvider,
+		dnsProvider:  mockProvider,
+		allowedZones: allowedZoneSet("example.com"),
 	}
 
 	ch := &v1alpha1.ChallengeRequest{
@@ -166,7 +160,8 @@ func TestSolver_CleanUp(t *testing.T) {
 	}
 
 	solver := &Solver{
-		dnsProvider: mockProvider,
+		dnsProvider:  mockProvider,
+		allowedZones: allowedZoneSet("example.com"),
 	}
 
 	ch := &v1alpha1.ChallengeRequest{
@@ -187,7 +182,8 @@ func TestSolver_CleanUp_Error(t *testing.T) {
 	}
 
 	solver := &Solver{
-		dnsProvider: mockProvider,
+		dnsProvider:  mockProvider,
+		allowedZones: allowedZoneSet("example.com"),
 	}
 
 	ch := &v1alpha1.ChallengeRequest{
@@ -199,6 +195,64 @@ func TestSolver_CleanUp_Error(t *testing.T) {
 	err := solver.CleanUp(ch)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "mock delete error")
+}
+
+func TestSolver_PresentRejectsDisallowedZonesBeforeProviderCall(t *testing.T) {
+	for _, zone := range []string{"other.example", "example.com.attacker.example", "example.co"} {
+		t.Run(zone, func(t *testing.T) {
+			called := false
+			solver := &Solver{
+				dnsProvider: &MockDNSProvider{AddTXTRecordFunc: func(_, _, _ string) (string, error) {
+					called = true
+					return "", nil
+				}},
+				allowedZones: allowedZoneSet("example.com"),
+			}
+
+			err := solver.Present(&v1alpha1.ChallengeRequest{
+				ResolvedFQDN: "_acme-challenge.sub.example.com.",
+				ResolvedZone: zone,
+				Key:          "key",
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not allowed")
+			assert.False(t, called)
+		})
+	}
+}
+
+func TestSolver_CleanUpRejectsDisallowedZoneBeforeProviderCall(t *testing.T) {
+	called := false
+	solver := &Solver{
+		dnsProvider: &MockDNSProvider{DeleteRecordsByKeyFunc: func(_, _, _ string) error {
+			called = true
+			return nil
+		}},
+		allowedZones: allowedZoneSet("example.com"),
+	}
+
+	err := solver.CleanUp(&v1alpha1.ChallengeRequest{
+		ResolvedFQDN: "_acme-challenge.other.example.",
+		ResolvedZone: "other.example.",
+		Key:          "key",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not allowed")
+	assert.False(t, called)
+}
+
+func TestParseAllowedZonesNormalizesAndRejectsInvalidValues(t *testing.T) {
+	allowed, err := parseAllowedZones(" EXAMPLE.COM. ,中文.com ")
+	require.NoError(t, err)
+	assert.Contains(t, allowed, "example.com")
+	assert.Contains(t, allowed, "xn--fiq228c.com")
+
+	for _, value := range []string{"", " ", "example.com,", "bad..example", "-bad.example", "bad_name.example"} {
+		t.Run(value, func(t *testing.T) {
+			_, err := parseAllowedZones(value)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestSolver_Present_Uninitialized(t *testing.T) {
@@ -262,4 +316,12 @@ func TestExtractDomainAndRR_Punycode(t *testing.T) {
 			assert.Equal(t, tt.expectRR, rr, "RR mismatch")
 		})
 	}
+}
+
+func allowedZoneSet(zones ...string) map[string]struct{} {
+	allowed := make(map[string]struct{}, len(zones))
+	for _, zone := range zones {
+		allowed[zone] = struct{}{}
+	}
+	return allowed
 }

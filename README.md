@@ -9,23 +9,23 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/crazygit/cert-manager-alidns-webhook/actions/workflows/ci.yaml">
-    <img src="https://img.shields.io/github/actions/workflow/status/crazygit/cert-manager-alidns-webhook/ci.yaml?branch=main" alt="CI Status" />
+  <a href="https://github.com/bernylinville/cert-manager-alidns-webhook/actions/workflows/ci.yaml">
+    <img src="https://img.shields.io/github/actions/workflow/status/bernylinville/cert-manager-alidns-webhook/ci.yaml?branch=main" alt="CI Status" />
   </a>
-  <a href="https://github.com/crazygit/cert-manager-alidns-webhook/releases">
-    <img src="https://img.shields.io/github/v/release/crazygit/cert-manager-alidns-webhook" alt="Latest Release" />
+  <a href="https://github.com/bernylinville/cert-manager-alidns-webhook/releases">
+    <img src="https://img.shields.io/github/v/release/bernylinville/cert-manager-alidns-webhook" alt="Latest Release" />
   </a>
-  <a href="https://github.com/crazygit/cert-manager-alidns-webhook/pkgs/container/cert-manager-alidns-webhook">
-    <img src="https://img.shields.io/github/v/release/crazygit/cert-manager-alidns-webhook?include_prereleases&label=ghcr.io" alt="Docker Package" />
+  <a href="https://github.com/bernylinville/cert-manager-alidns-webhook/pkgs/container/cert-manager-alidns-webhook">
+    <img src="https://img.shields.io/github/v/release/bernylinville/cert-manager-alidns-webhook?include_prereleases&label=ghcr.io" alt="Docker Package" />
   </a>
   <a href="https://artifacthub.io/packages/search?repo=cert-manager-alidns-webhook">
     <img src="https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/cert-manager-alidns-webhook" alt="Artifact Hub" />
   </a>
-  <a href="https://codecov.io/github/crazygit/cert-manager-alidns-webhook" >
-    <img src="https://codecov.io/github/crazygit/cert-manager-alidns-webhook/graph/badge.svg?token=SE1CACI9FY"/>
+  <a href="https://codecov.io/github/bernylinville/cert-manager-alidns-webhook" >
+    <img src="https://codecov.io/github/bernylinville/cert-manager-alidns-webhook/graph/badge.svg"/>
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/crazygit/cert-manager-alidns-webhook" alt="License" />
+    <img src="https://img.shields.io/github/license/bernylinville/cert-manager-alidns-webhook" alt="License" />
   </a>
 </p>
 
@@ -46,7 +46,7 @@ Unlike traditional solutions, this project adopts an **Infrastructure as Identit
 - **Multiple Authentication Methods** - RRSA, environment variables, Kubernetes Secret, ECS instance role
 - **Idempotent Operations** - DNS record operations are safely retryable
 - **Production Ready** - Complete Helm Chart, RBAC, and health checks
-- **Latest Tech Stack** - Based on latest Alibaba Cloud Tea SDK and cert-manager v1.19+
+- **Latest Tech Stack** - Alibaba Cloud Tea SDK, cert-manager v1.21.1, and Kubernetes v0.36 libraries
 
 ---
 
@@ -108,11 +108,13 @@ This webhook uses Alibaba Cloud [`credentials-go`](https://github.com/aliyun/cre
 
 ### Prerequisites
 
-- Kubernetes 1.34+
+- A Kubernetes version supported by cert-manager v1.21.1
 - Helm 3.0+
-- cert-manager v1.19.0+ installed
+- cert-manager v1.21.1 installed
 - Alibaba Cloud DNS account
 - Domain hosted on Alibaba Cloud DNS
+
+The webhook fails closed unless every managed DNS zone is listed in `allowedZones`. The chart defaults to the production zone `pksl.net.cn`; replace it for other environments.
 
 ### Method 1: Using RRSA (Recommended for Production)
 
@@ -130,7 +132,8 @@ If you're unsure whether these conditions are met, refer to the documentation to
 
 ```bash
 # Install webhook using Helm
-helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook \
+helm install cert-manager-alidns-webhook oci://ghcr.io/bernylinville/charts/cert-manager-alidns-webhook \
+  --set allowedZones[0]=example.com \
   --set aliyunAuth.rrsa.enabled=true \
   --set aliyunAuth.rrsa.roleName=<YOUR_ROLE_NAME>
 ```
@@ -166,7 +169,8 @@ Please replace `<YOUR_ROLE_NAME>` with your RAM role name. Ensure the role has A
 
 ```bash
 # Method 1: Direct values
-helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook \
+helm install cert-manager-alidns-webhook oci://ghcr.io/bernylinville/charts/cert-manager-alidns-webhook \
+  --set allowedZones[0]=example.com \
   --set aliyunAuth.accessKeyID=<YOUR_ACCESS_KEY_ID> \
   --set aliyunAuth.accessKeySecret=<YOUR_ACCESS_KEY_SECRET>
 
@@ -175,7 +179,8 @@ kubectl create secret generic alidns-credentials \
   --from-literal=accessKeyID=<YOUR_ACCESS_KEY_ID> \
   --from-literal=accessKeySecret=<YOUR_ACCESS_KEY_SECRET>
 
-helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook \
+helm install cert-manager-alidns-webhook oci://ghcr.io/bernylinville/charts/cert-manager-alidns-webhook \
+  --set allowedZones[0]=example.com \
   --set aliyunAuth.existingSecret=alidns-credentials
 ```
 
@@ -184,7 +189,8 @@ helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-mana
 If your Kubernetes cluster runs on Alibaba Cloud ECS with an instance RAM role assigned and the [required permissions](#authorize-rrsa-role) bound to that role, no additional authentication configuration is needed:
 
 ```bash
-helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook
+helm install cert-manager-alidns-webhook oci://ghcr.io/bernylinville/charts/cert-manager-alidns-webhook \
+  --set allowedZones[0]=example.com
 ```
 
 ### Method 4: Using config.json File
@@ -197,7 +203,8 @@ kubectl create configmap aliyun-config \
   --from-file=config.json=/path/to/.aliyun/config.json
 
 # 2. Install webhook using Helm
-helm install cert-manager-alidns-webhook oci://ghcr.io/crazygit/charts/cert-manager-alidns-webhook \
+helm install cert-manager-alidns-webhook oci://ghcr.io/bernylinville/charts/cert-manager-alidns-webhook \
+  --set allowedZones[0]=example.com \
   --set aliyunAuth.configJSON.enabled=true \
   --set aliyunAuth.configJSON.configMapName=aliyun-config
 ```
@@ -221,7 +228,7 @@ spec:
     solvers:
       - dns01:
           webhook:
-            groupName: alidns.crazygit.github.io # Must match the groupName used during Helm installation
+            groupName: alidns.bernylinville.github.io # Must match the groupName used during Helm installation
             solverName: alidns
 ```
 
@@ -241,7 +248,7 @@ spec:
     solvers:
       - dns01:
           webhook:
-            groupName: alidns.crazygit.github.io # Must match the groupName used during Helm installation
+            groupName: alidns.bernylinville.github.io # Must match the groupName used during Helm installation
             solverName: alidns
 ```
 
@@ -266,22 +273,27 @@ kubectl delete configmap aliyun-config
 
 ### Helm Values
 
-| Parameter                             | Description                | Default                                |
-| :------------------------------------ | :------------------------- | :------------------------------------- |
-| `groupName`                           | API group name             | `alidns.crazygit.github.io`            |
-| `image.repository`                    | Image repository           | `crazygit/cert-manager-alidns-webhook` |
-| `image.tag`                           | Image tag                  | `""` (defaults to chart appVersion)   |
-| `replicaCount`                        | Replica count              | `1`                                    |
-| `aliyunAuth.regionID`                 | Alibaba Cloud region ID    | `""`                                   |
-| `aliyunAuth.accessKeyID`              | AccessKey ID               | `""`                                   |
-| `aliyunAuth.accessKeySecret`          | AccessKey Secret           | `""`                                   |
-| `aliyunAuth.existingSecret`           | Existing Secret name       | `""`                                   |
-| `aliyunAuth.rrsa.enabled`             | Enable RRSA                | `false`                                |
-| `aliyunAuth.rrsa.roleName`            | RRSA role name             | `""`                                   |
-| `aliyunAuth.configJSON.enabled`       | Enable config.json         | `false`                                |
-| `aliyunAuth.configJSON.configMapName` | config.json ConfigMap name | `""`                                   |
+| Parameter                        | Description                                  | Default                                              |
+| :------------------------------- | :------------------------------------------- | :--------------------------------------------------- |
+| `groupName`                      | Aggregated API group                         | `alidns.bernylinville.github.io`                     |
+| `allowedZones`                   | Exact DNS mutation allowlist                 | `["pksl.net.cn"]`                                   |
+| `image.repository`               | Image repository                             | `ghcr.io/bernylinville/cert-manager-alidns-webhook`  |
+| `image.tag`                      | Image tag                                    | `""` (chart appVersion)                             |
+| `imagePullSecrets`               | Pod image pull secrets                       | `[]`                                                 |
+| `replicaCount`                   | Replica count                                | `2`                                                  |
+| `securePort`                     | Non-root container HTTPS listener            | `10250`                                              |
+| `resources`                      | CPU and memory requests/limits               | `10m/32Mi` requests, `100m/128Mi` limits             |
+| `podDisruptionBudget.enabled`    | Create a PDB                                 | `true`                                               |
+| `podAntiAffinity.enabled`        | Prefer replicas on different nodes           | `true`                                               |
+| `topologySpreadConstraints.enabled` | Enable hostname topology spread          | `true`                                               |
+| `networkPolicy.enabled`          | Create a configurable NetworkPolicy          | `false`                                              |
+| `aliyunAuth.existingSecret`      | Existing Secret containing AK/SK             | `""`                                                |
+| `aliyunAuth.rrsa.enabled`        | Enable RRSA                                  | `false`                                              |
+| `aliyunAuth.configJSON.enabled`  | Mount credentials-go config from a ConfigMap | `false`                                              |
 
 For complete configuration, see [deploy/cert-manager-alidns-webhook/values.yaml](deploy/cert-manager-alidns-webhook/values.yaml).
+
+The Service continues to expose port `443`; `securePort` is the unprivileged container listener reached through the Service's named `https` target port.
 
 ---
 
