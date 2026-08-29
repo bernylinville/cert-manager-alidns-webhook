@@ -74,15 +74,25 @@ jobs:
         run: |
           helm lint deploy/cert-manager-alidns-webhook
 
-      - name: Verify unprivileged listener wiring
+      - name: Verify fail-closed zone and unprivileged listener wiring
         run: |
-          helm template validation deploy/cert-manager-alidns-webhook --namespace cert-manager | awk '
+          helm template validation deploy/cert-manager-alidns-webhook --namespace cert-manager > /tmp/default.yaml
+          awk '
             /- --secure-port=10250/ { secure_port_arg = 1 }
             /containerPort: 10250/ { container_port = 1 }
             /port: 443/ { service_port = 1 }
             /targetPort: https/ { service_target = 1 }
-            END { exit !(secure_port_arg && container_port && service_port && service_target) }
-          '
+            /name: ALIDNS_ALLOWED_ZONES/ { getline; if ($0 ~ /value: ""/) empty_zones = 1 }
+            END { exit !(secure_port_arg && container_port && service_port && service_target && empty_zones) }
+          ' /tmp/default.yaml
+
+          helm template validation deploy/cert-manager-alidns-webhook \
+            --namespace cert-manager --set allowedZones[0]=pksl.net.cn > /tmp/explicit.yaml
+          awk '
+            /name: ALIDNS_ALLOWED_ZONES/ { getline; if ($0 ~ /value: "pksl.net.cn"/) explicit_zone = 1 }
+            END { exit !explicit_zone }
+          ' /tmp/explicit.yaml
+
           if helm lint deploy/cert-manager-alidns-webhook --set securePort=443; then
             echo "expected values schema to reject privileged securePort" >&2
             exit 1

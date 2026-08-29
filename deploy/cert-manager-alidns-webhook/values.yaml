@@ -1,9 +1,8 @@
 # -- Aggregated API group exposed by this webhook. Issuer references must match.
 groupName: alidns.bernylinville.github.io
 
-# -- DNS zones the webhook may mutate. Values are normalized and matched exactly.
-allowedZones:
-  - pksl.net.cn
+# -- DNS zones the webhook may mutate. Empty by default: the webhook fails closed until explicitly configured.
+allowedZones: []
 
 certManager:
   namespace: cert-manager
