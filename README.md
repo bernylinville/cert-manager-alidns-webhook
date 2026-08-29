@@ -114,7 +114,7 @@ This webhook uses Alibaba Cloud [`credentials-go`](https://github.com/aliyun/cre
 - Alibaba Cloud DNS account
 - Domain hosted on Alibaba Cloud DNS
 
-The webhook fails closed unless every managed DNS zone is listed in `allowedZones`. The chart defaults to the production zone `pksl.net.cn`; replace it for other environments.
+The webhook fails closed unless every managed DNS zone is explicitly listed in `allowedZones`. The chart default is an empty list and cannot mutate any zone.
 
 ### Method 1: Using RRSA (Recommended for Production)
 
@@ -276,7 +276,7 @@ kubectl delete configmap aliyun-config
 | Parameter                        | Description                                  | Default                                              |
 | :------------------------------- | :------------------------------------------- | :--------------------------------------------------- |
 | `groupName`                      | Aggregated API group                         | `alidns.bernylinville.github.io`                     |
-| `allowedZones`                   | Exact DNS mutation allowlist                 | `["pksl.net.cn"]`                                   |
+| `allowedZones`                   | Exact DNS mutation allowlist                 | `[]` (must be configured explicitly)                 |
 | `image.repository`               | Image repository                             | `ghcr.io/bernylinville/cert-manager-alidns-webhook`  |
 | `image.tag`                      | Image tag                                    | `""` (chart appVersion)                             |
 | `imagePullSecrets`               | Pod image pull secrets                       | `[]`                                                 |

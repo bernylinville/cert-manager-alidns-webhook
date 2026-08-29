@@ -114,7 +114,7 @@
 - 阿里云 DNS 账号
 - 域名已托管在阿里云 DNS
 
-Webhook 仅允许修改 `allowedZones` 中精确列出的 DNS Zone，未配置时会拒绝启动。Chart 默认为生产 Zone `pksl.net.cn`，其他环境必须覆盖该值。
+Webhook 仅允许修改 `allowedZones` 中精确列出的 DNS Zone。Chart 默认值为空列表，未显式配置时无法修改任何 Zone，并会在初始化阶段失败。
 
 ### 方式一：使用 RRSA（生产环境推荐）
 
@@ -275,7 +275,7 @@ kubectl delete configmap aliyun-config
 | 参数                                  | 描述                          | 默认值                                                |
 | :------------------------------------ | :---------------------------- | :---------------------------------------------------- |
 | `groupName`                           | 聚合 API 组名                 | `alidns.bernylinville.github.io`                      |
-| `allowedZones`                        | DNS 修改精确允许列表          | `["pksl.net.cn"]`                                    |
+| `allowedZones`                        | DNS 修改精确允许列表          | `[]`（必须显式配置）                                 |
 | `image.repository`                    | 镜像仓库                      | `ghcr.io/bernylinville/cert-manager-alidns-webhook`   |
 | `image.tag`                           | 镜像标签                      | `""`（默认使用 chart appVersion）                    |
 | `imagePullSecrets`                    | 镜像拉取 Secret               | `[]`                                                  |
